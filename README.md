@@ -1,129 +1,102 @@
-# pg_readonly
-pg_readonly is a PostgreSQL extension which allows to set all cluster databases read only.
+# safesession
 
-Note that version 1.0.4 is fixing a important bug regarding DML in CTE.
+safesession is a PostgreSQL extension that locks a session into read-only
+mode.  Once loaded, every transaction in the session is forced read-only:
+INSERT, UPDATE, DELETE, DDL and modifying CTEs are all rejected.
 
-# Installation
+The primary use case is **safe database access for AI agents and automated
+tools** (e.g. MCP servers).  Connection setup is typically controlled by the
+application, not the agent — so the application loads safesession before
+handing the connection over, and the agent cannot undo the protection.
 
-## Installation with GNU/Linux package
+See the [pgsql-hackers discussion](https://www.postgresql.org/message-id/flat/CADsUR0B9bcJQKYHyUMnWcODGzF5%2BAdeToawULkkTKfrq32Z-8w%40mail.gmail.com)
+for background.
 
-For example install RPM package with:
-<br><br>
-`sudo dnf install -y pg_readonly_17`
-<br><br>
-Extension must be loaded at server level with `shared_preload_libraries` parameter:
-<br><br>
-`shared_preload_libraries = 'pg_readonly'`
-<br><br>
-Stop and restart PostgreSQL instance and create the extension with:
-<br><br>
-`create extension pg_readonly;`
-<br><br>
+## How it works
 
-## Compiling, installing and testing with PGXS
-This extension can be built using the standard PGXS infrastructure for example with [pgenv](https://github.com/theory/pgenv) :
+safesession installs two hooks — ExecutorStart and ProcessUtility — that
+set `transaction_read_only = on` (via `GUC_ACTION_LOCAL`) before every
+statement.  The core PostgreSQL enforcement then takes over:
 
-`git clone https://github.com/pierreforstmann/pg_readonly.git` <br>
-`cd pg_readonly` <br>
-`export USE_PGXS=1`<br>
-`make` <br>
-`make install` <br>
-`make installcheck`<br>
+- `ExecCheckXactReadOnly()` blocks DML and modifying CTEs.
+- `PreventCommandIfReadOnly()` blocks DDL and other write utility commands.
+- The GUC is scoped to the current transaction and auto-reverts at
+  transaction end, but the hooks re-assert it on the next statement.
+- `check_transaction_read_only()` in core prevents the agent from flipping
+  `transaction_read_only` back to off within the same transaction.
 
-## Compiling, installing and testing without PGXS
-You can also build the extension without PGXS in the PostgreSQL source code tree:<br>
-`cd contrib`<br>
-`git clone https://github.com/pierreforstmann/pg_readonly.git` <br>
-`cd pg_readonly` <br>
-`make` <br><br>
-Running `make check` is going to start a temporary instance used for running the test using only built binaries:<br>
-`make check`
-<br> <br>
-Running `make installcheck` is going to use an existing PostgreSQL instance with installed binaries.
-<br>
-You need to set `shared_preload_libraires` for this instance (see above):
-<br>
-`make install`<br>
-`make installcheck`<br>
+No shared memory, no background workers, no SQL-callable functions.
 
-## Validated PostgreSQL versions
-This extension has been validated with PostgreSQL 9.5, 9.6, 10, 11, 12, 13, 14, 15, 16, 17 and 18.
+## Activation
 
-## Usage
-pg_readonly has no specific GUC. <br><br>
-The read-only status is managed only in (shared) memory with a global flag. SQL functions are provided to set the flag, to unset the flag and to query the flag.
-The current version of the extension does not allow to store the read-only status in a permanent way.<br><br>
-The flag is at cluster level: either all databases are read-only or all database are read-write (the usual setting).<br><br>
-The read-only mode is implemented by filtering SQL statements: 
-<ul>
-<li>SELECT statements are allowed if they don't call functions that write. </li>
-<li>DML (INSERT, UPDATE, DELETE) and DDL statements including TRUNCATE are forbidden entirely. </li>
-<li> DCL statements GRANT and REVOKE are also forbidden. </li>
-</ul>
-This means that the databases are in read-only mode at SQL level: however, the checkpointer, background writer, walwriter and the autovacuum launcher are still running; this means that the database files are not read-only and that in some cases the database may still write to disk.<br>
+safesession is activated per-session with the `LOAD` command:
 
+```sql
+LOAD 'safesession';
+```
+
+This is typically done by the application at connection startup, before the
+AI agent begins issuing queries.  Once loaded, the hooks remain active for
+the lifetime of the session — there is no way to unload them.
+
+## Installation
+
+### Building within the PostgreSQL source tree
+
+```sh
+cd contrib/safesession
+make
+make install
+make check        # runs a temporary instance for regression tests
+```
+
+### Building with PGXS
+
+```sh
+cd safesession
+export USE_PGXS=1
+make
+make install
+make installcheck
+```
 
 ## Example
 
-To query the cluster status, call the function get_cluster_readonly which returns true is the cluster is read-only and false if not: <br>
+```
+postgres=# CREATE TABLE t(i int);
+CREATE TABLE
+postgres=# INSERT INTO t VALUES (1);
+INSERT 0 1
+postgres=# LOAD 'safesession';
+LOAD
+postgres=# SELECT * FROM t;
+ i
+---
+ 1
+(1 row)
 
-`# select get_cluster_readonly();`<br>
-` get_cluster_readonly `<br>
-`----------------------`<br>
-` f`<br>
-`(1 row)`<br>
+postgres=# INSERT INTO t VALUES (2);
+ERROR:  cannot execute INSERT in a read-only transaction
+postgres=# CREATE TABLE t2(i int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+postgres=# SET transaction_read_only = off;
+ERROR:  cannot set transaction read-only mode inside a read-only transaction
+```
 
-To set the cluster read-only, call the function set_cluster_readonly:<br>
-`# select set_cluster_readonly();`<br>
-` set_cluster_readonly ` <br>
-`----------------------` <br>
-` t` <br>
-`(1 row)`
+## Limitations
 
-The cluster is now read-only and only SELECT statements are allowed:
+- **Session scope only.**  safesession protects the session it is loaded
+  into.  Other sessions are unaffected.
+- **Maintenance commands.**  `VACUUM`, `ANALYZE` and `CHECKPOINT` are
+  classified as read-only by core and are not blocked.
+- **Background processes.**  The checkpointer, background writer, WAL writer
+  and autovacuum continue to operate normally — safesession does not make the
+  physical database files read-only.
 
-`pierre=# select * from t;`<br>
-` x  |  y  `<br>
-`----+-----`<br>
-` 32 | abc`<br>
-`(1 row)`<br>
+## Based on pg_readonly
 
-`# update t set x=33 where y='abc';`<br>
-`ERROR:  pg_readonly: invalid statement because cluster is read-only`<br>
-`# select 1 into tmp;`<br>
-`ERROR:  pg_readonly: invalid statement because cluster is read-only`<br>
-`# create table tmp(c text);`<br>
-`ERROR:  pg_readonly: invalid statement because cluster is read-only`<br>
-
-To set the cluster on read-write, call the function unset_cluster_readonly:
-
-`# select unset_cluster_readonly();`<br>
-` unset_cluster_readonly `<br>
-`------------------------`<br>
-` t`<br>
-`(1 row)`<br>
-
-The cluster is now read-write and any DML or DDL statement is allowed:<br>
-`# update t set x=33 where y='abc';`<br>
-`UPDATE 1`<br>
-`# select * from t;`<br>
-` x  |  y  `<br>
-`----+-----`<br>
-` 33 | abc`<br>
-`(1 row)`<br>
-
-Note that any open transaction is cancelled by set_cluster_readonly function.<br>
-The client is disconnected and gets the following message: <br>
-`FATAL:  terminating connection due to conflict with recovery`<br>
-`DETAIL:  User query might have needed to see row versions that must be removed.`<br>
-`HINT:  In a moment you should be able to reconnect to the database and repeat your command.`<br>
-In PostgreSQL log, following messages are written:<br>
-
-`2020-04-14 16:00:14.531 CEST [29578] LOG:  pg_readonly: killing all transactions ...`<br>
-`2020-04-14 16:00:14.531 CEST [29578] LOG:  pg_readonly: PID 29569 signalled`<br>
-`2020-04-14 16:00:14.531 CEST [29578] LOG:  pg_readonly: ... done.`<br>
-`2020-04-14 16:00:14.531 CEST [29569] FATAL:  terminating connection due to conflict with recovery`<br>
-`2020-04-14 16:00:14.531 CEST [29569] DETAIL:  User query might have needed to see row versions that must be removed.`<br>
-`2020-04-14 16:00:14.531 CEST [29569] HINT:  In a moment you should be able to reconnect to the database and repeat your command.`<br>
-
-
+safesession is derived from
+[pg_readonly](https://github.com/pierreforstmann/pg_readonly) by Pierre
+Forstmann, which provides cluster-wide read-only mode via shared memory and
+SQL functions.  safesession strips that down to per-session, load-and-forget
+protection with no SQL interface.
