@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo_alpha.png" height="200" alt="safesession logo">
+</p>
+
 # safesession
 
 safesession is a PostgreSQL extension that locks a session into read-only
