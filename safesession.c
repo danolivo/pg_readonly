@@ -9,7 +9,8 @@
  * This program is open source, licensed under the PostgreSQL license.
  * For license terms, see the LICENSE file.
  *
- * Copyright (c) 2020, Pierre Forstmann.
+ * Portions Copyright (c) 2020, Pierre Forstmann.
+ * Portions Copyright (c) 2026, Andrei Lepikhov.
  *
  *-------------------------------------------------------------------------
 */
