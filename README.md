@@ -14,16 +14,18 @@ for background.
 
 ## How it works
 
-safesession installs two hooks — ExecutorStart and ProcessUtility — that
-set `transaction_read_only = on` (via `GUC_ACTION_LOCAL`) before every
-statement.  The core PostgreSQL enforcement then takes over:
+safesession installs two hooks — ExecutorStart and ProcessUtility.  On the
+first statement after `LOAD`, the hooks set `default_transaction_read_only`
+and `transaction_read_only` to `on` at the session level.  This means:
 
-- `ExecCheckXactReadOnly()` blocks DML and modifying CTEs.
-- `PreventCommandIfReadOnly()` blocks DDL and other write utility commands.
-- The GUC is scoped to the current transaction and auto-reverts at
-  transaction end, but the hooks re-assert it on the next statement.
+- Every new transaction starts with `XactReadOnly = true` automatically.
+- Core PostgreSQL enforcement takes over from there:
+  `ExecCheckXactReadOnly()` blocks DML and modifying CTEs,
+  `PreventCommandIfReadOnly()` blocks DDL and other write utility commands.
 - `check_transaction_read_only()` in core prevents the agent from flipping
   `transaction_read_only` back to off within the same transaction.
+- After the initial setup, the hooks short-circuit immediately (checking
+  only that `XactReadOnly` is still true), adding near-zero overhead.
 
 No shared memory, no background workers, no SQL-callable functions.
 

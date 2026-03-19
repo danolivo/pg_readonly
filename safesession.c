@@ -59,13 +59,15 @@ _PG_init(void)
 }
 
 /*
- * Set transaction_read_only for the current transaction via the GUC
- * machinery.  Using GUC_ACTION_LOCAL means the value is automatically
- * reverted at transaction end — no manual restore is needed.
+ * Ensure the session is in read-only mode.
  *
- * Once set, the user cannot revert to read-write mode within the same
- * transaction: check_transaction_read_only() in variable.c rejects the
- * read-only -> read-write transition after the first snapshot is taken.
+ * We set default_transaction_read_only = on at the session level
+ * (GUC_ACTION_SET) so that every new transaction starts with
+ * XactReadOnly = true automatically.  This is done once — subsequent
+ * calls short-circuit via the XactReadOnly check.
+ *
+ * The hooks still act as a safety net: if anything manages to flip
+ * XactReadOnly off mid-transaction, the next hook call catches it.
  */
 static void
 ss_set_xact_readonly(void)
@@ -73,9 +75,12 @@ ss_set_xact_readonly(void)
 	if (XactReadOnly)
 		return;
 
+	set_config_option("default_transaction_read_only", "on",
+					  PGC_USERSET, PGC_S_SESSION,
+					  GUC_ACTION_SET, true, 0, false);
 	set_config_option("transaction_read_only", "on",
 					  PGC_USERSET, PGC_S_SESSION,
-					  GUC_ACTION_LOCAL, true, 0, false);
+					  GUC_ACTION_SET, true, 0, false);
 }
 
 /*
