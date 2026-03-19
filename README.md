@@ -88,12 +88,31 @@ postgres=# SET transaction_read_only = off;
 ERROR:  cannot set transaction read-only mode inside a read-only transaction
 ```
 
+## Blocking maintenance commands
+
+Core PostgreSQL allows `VACUUM`, `ANALYZE`, `CLUSTER`, `REINDEX` and
+`CHECKPOINT` in read-only transactions because they don't change
+user-visible data.  However, they do modify internal state (page layout,
+statistics, WAL), which may be undesirable for an untrusted session.
+
+safesession provides the `safesession.blocked_commands` GUC to block any
+combination of these commands.  The parameter can only be set in
+`postgresql.conf` (requires server restart or reload to take effect) — it
+cannot be changed by `SET` at runtime, so an untrusted session cannot
+weaken the restriction:
+
+```
+# postgresql.conf
+safesession.blocked_commands = 'vacuum, analyze, checkpoint'
+```
+
+Supported values (comma-separated, case-insensitive): `vacuum`, `analyze`,
+`cluster`, `reindex`, `checkpoint`.
+
 ## Limitations
 
 - **Session scope only.**  safesession protects the session it is loaded
   into.  Other sessions are unaffected.
-- **Maintenance commands.**  `VACUUM`, `ANALYZE` and `CHECKPOINT` are
-  classified as read-only by core and are not blocked.
 - **Background processes.**  The checkpointer, background writer, WAL writer
   and autovacuum continue to operate normally — safesession does not make the
   physical database files read-only.

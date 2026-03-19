@@ -1,6 +1,9 @@
 --
 -- test.sql
 --
+-- safesession.blocked_commands is set in safesession.conf at server startup.
+-- It cannot be changed at runtime (PGC_POSTMASTER).
+--
 -- Setup: create test objects before activating safesession
 create table t(i int);
 create function f(IN p int, OUT i int) returns int as $$
@@ -10,6 +13,13 @@ end$$
 language plpgsql;
 -- Activate safesession: from now on the session is read-only
 LOAD 'safesession';
+-- Show the blocked_commands setting (set at startup)
+SHOW safesession.blocked_commands;
+         safesession.blocked_commands          
+-----------------------------------------------
+ vacuum, analyze, cluster, reindex, checkpoint
+(1 row)
+
 -- SELECTs still work
 select * from t;
  i 
@@ -47,3 +57,17 @@ SELECT lo_create(0);
      16389
 (1 row)
 
+-- Maintenance commands are blocked per safesession.blocked_commands
+VACUUM t;
+ERROR:  VACUUM is blocked by safesession
+ANALYZE t;
+ERROR:  ANALYZE is blocked by safesession
+CLUSTER t;
+ERROR:  CLUSTER is blocked by safesession
+REINDEX TABLE t;
+ERROR:  REINDEX is blocked by safesession
+CHECKPOINT;
+ERROR:  CHECKPOINT is blocked by safesession
+-- Cannot change at runtime
+SET safesession.blocked_commands = '';
+ERROR:  parameter "safesession.blocked_commands" cannot be changed now
